@@ -1,0 +1,140 @@
+---
+author: "Anusri"
+date: "2025-02-10"
+output: html_document
+---
+
+```{r}
+haversine <- function(lat1, lon1, lat2, lon2) {
+  r <- 3959  # Radius of Earth in miles
+  lat1 <- lat1 * pi / 180
+  lon1 <- lon1 * pi / 180
+  lat2 <- lat2 * pi / 180
+  lon2 <- lon2 * pi / 180
+  dlat <- lat2 - lat1
+  dlon <- lon2 - lon1
+  a <- sin(dlat / 2)^2 + cos(lat1) * cos(lat2) * sin(dlon / 2)^2
+  c <- 2 * atan2(sqrt(a), sqrt(1 - a))
+  return(r * c)
+}
+
+```
+
+I have defined the Haversine function which calculates the great-circle distance between two latitude-longitude points 
+
+```{r}
+# Load necessary library
+install.packages("readxl")
+library(readxl)
+```
+
+Installing the required packages
+
+```{r}
+# Load the dataset
+file_path <- ("C:/Users/anusr/Downloads/clinics.xls")  
+df <- read_excel(file_path)
+
+# Convert to a data frame
+df <- as.data.frame(df)
+```
+Loaded the dataset
+
+```{r}
+# For-loop implementation
+haversine_looping <- function(df) {
+  distances <- numeric(nrow(df))
+  for (i in 1:nrow(df)) {
+    distances[i] <- haversine(40.671, -73.985, df$locLat[i], df$locLong[i])
+  }
+  return(distances)
+}
+
+
+str(df)  # Checking the structure of the dataframe
+df$locLat <- as.numeric(df$locLat)
+df$locLong <- as.numeric(df$locLong)
+df <- df[!is.na(df$locLat) & !is.na(df$locLong), ]  # Removing rows with NA values
+df$distance <- haversine(40.671, -73.985, df$locLat, df$locLong)
+
+
+# Measure execution time
+library(microbenchmark)
+microbenchmark(for_loop = haversine_looping(df), times = 1)
+
+```
+I have implemented for loop which calculates distances iterating through each row of the dataframe. Converted latitude and longitude columns to numeric and removes NA values before computation. The execution time of the for-loop approach is measured using the microbenchmark library.And I got min of 5.5907milliseconds. This method is less efficient than vectorized approaches but helps in understanding the process.
+
+
+
+```{r}
+#Using apply() method
+haversine_apply <- function(df) {
+  distances <- apply(df, 1, function(row) {
+    haversine(40.671, -73.985, row["locLat"], row["locLong"])
+  })
+  return(distances)
+}
+
+
+str(df)  
+summary(df)  
+df$locLat <- as.numeric(df$locLat)
+df$locLong <- as.numeric(df$locLong)
+df <- df[!is.na(df$locLat) & !is.na(df$locLong), ]
+haversine_apply <- function(df) {
+  distances <- apply(df, 1, function(row) {
+    lat <- as.numeric(row["locLat"])
+    lon <- as.numeric(row["locLong"])
+    if (is.na(lat) | is.na(lon)) return(NA)  # Skip invalid rows
+    haversine(40.671, -73.985, lat, lon)
+  })
+  return(distances)
+}
+
+df$distance <- haversine_apply(df)
+
+
+# Measure execution time
+microbenchmark(apply_method = haversine_apply(df), times = 1)
+
+```
+For one more way I used apply() function.It ensures latitude and longitude values are numeric and removes NA values before computation. Compared to a for-loop, this approach is more efficient but still slower than vectorized operations and the execution time of the apply-based approach is measured using the microbenchmark library. I got min of 5.439.
+
+```{r}
+#Using Vectorized approach
+haversine_vectorized <- function(df) {
+  r <- 3959  # Radius of Earth in miles
+  lat1 <- 40.671 * pi / 180
+  lon1 <- -73.985 * pi / 180
+  lat2 <- df$locLat * pi / 180
+  lon2 <- df$locLong * pi / 180
+  dlat <- lat2 - lat1
+  dlon <- lon2 - lon1
+  a <- sin(dlat / 2)^2 + cos(lat1) * cos(lat2) * sin(dlon / 2)^2
+  c <- 2 * atan2(sqrt(a), sqrt(1 - a))
+  return(r * c)
+}
+
+# Measure execution time
+microbenchmark(vectorized = haversine_vectorized(df), times = 1)
+
+```
+Vectorized function computes distances using a fully vectorized approach, leveraging element-wise operations.This avoids explicit loops, making it significantly faster than both the for-loop and apply methods. The vectorized implementation directly computes distances for all rows in a single operation and execution time is measured using the microbenchmark library to compare efficiency.
+
+
+```{r}
+#Tabulating the results
+results <- microbenchmark(
+  for_loop = haversine_looping(df),
+  apply_method = haversine_apply(df),
+  vectorized = haversine_vectorized(df),
+  times = 1
+)
+
+print(results)
+
+```
+
+
+
