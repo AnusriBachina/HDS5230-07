@@ -1,0 +1,193 @@
+Loading Datasets
+```{r}
+install.packages("mlbench")
+install.packages("purrr")
+install.packages("tibble")
+install.packages("xgboost")
+install.packages("caret")
+```
+
+```{r}
+library(mlbench)
+library(purrr)
+library(tibble)
+```
+
+```{r}
+# Load and clean the data
+data("PimaIndiansDiabetes2")
+ds <- as.data.frame(na.omit(PimaIndiansDiabetes2))
+```
+
+```{r}
+# Fit logistic regression model
+logmodel <- glm(diabetes ~ ., data = ds, family = "binomial")
+cfs <- coefficients(logmodel)
+prednames <- variable.names(ds)[-9]
+```
+
+```{r}
+# Define the data generator function
+generate_data <- function(sz) {
+  dfdata <- map_dfc(prednames, function(nm) {
+    sample(ds[[nm]], size = sz, replace = TRUE)
+  })
+  names(dfdata) <- prednames
+  
+  pvec <- map(1:8, function(i) {
+    cfs[i + 1] * dfdata[[prednames[i]]]
+  }) %>%
+    reduce(`+`) + cfs[1]
+  
+  dfdata$outcome <- as.factor(ifelse(1 / (1 + exp(-pvec)) > 0.5, 1, 0))
+  return(dfdata)
+}
+```
+
+```{r}
+# Generate and save datasets of various sizes
+sizes <- c(100, 1000, 10000, 100000, 1e6, 1e7)
+
+for (sz in sizes) {
+  df <- generate_data(sz)
+  saveRDS(df, file = paste0("bootstrap_data_", sz, ".rds"))
+  cat("Saved dataset of size", sz, "\n")
+}
+```
+
+
+
+
+XGBoost in R – direct use of xgboost() with simple cross-validation
+
+
+
+```{r}
+# XGBoost direct evaluation (no caret)
+library(xgboost)
+
+sizes <- c(100, 1000, 10000, 100000, 1e6, 1e7)
+results <- data.frame()
+
+run_xgboost_direct <- function(df) {
+  X <- as.matrix(df[, -ncol(df)])
+  y <- as.numeric(as.character(df$outcome))
+  start <- Sys.time()
+  model <- xgboost(data = X, label = y, nrounds = 100, objective = "binary:logistic", verbose = 0)
+  end <- Sys.time()
+  pred <- predict(model, X)
+  acc <- mean((pred > 0.5) == y)
+  return(c(round(acc, 4), round(as.numeric(difftime(end, start, units = "secs")), 2)))
+}
+
+for (sz in sizes) {
+  cat("Evaluating dataset size:", sz, "\n")
+  df <- readRDS(paste0("bootstrap_data_", sz, ".rds"))
+
+  res <- tryCatch(run_xgboost_direct(df),
+                  error = function(e) c("Error", as.character(e)))
+
+  results <- rbind(results, data.frame(
+    Method = "XGBoost in R – direct use of xgboost()",
+    Size = sz,
+    Accuracy = res[1],
+    Time = res[2]
+  ))
+}
+
+write.csv(results, "xgboost_direct_results.csv", row.names = FALSE)
+print(results)
+```
+This R code implements XGBoost model training using the direct xgboost() function without relying on the caret package or built-in cross-validation. It evaluates datasets of increasing sizes, from 100 to 10 million rows. For each dataset, the function run_xgboost_direct() is called, where the predictors are converted to a matrix, the outcome variable is coerced to numeric, and a binary logistic model is trained using 100 boosting rounds. Predictions are made on the training data itself, and accuracy is computed as the proportion of correctly classified instances. The time taken for each model to train is recorded using Sys.time(). Results including method name, dataset size, accuracy, and execution time are collected and saved to a CSV file for analysis. This approach offers high computational efficiency and is particularly well-suited for benchmarking XGBoost on very large datasets without the overhead of repeated resampling or tuning.
+
+
+
+The direct use of xgboost() in R yielded consistently high predictive accuracy across all dataset sizes, demonstrating the method’s scalability and efficiency. For smaller datasets ranging from 100 to 10,000 records, the model achieved perfect accuracy (1.0000) with training times under one second. As the dataset size increased to 100,000 and 1 million rows, the accuracy slightly decreased to 99.97% and 99.59%, respectively, while the training time increased to 2.61 and 33.47 seconds. Even with the largest dataset of 10 million records, the model maintained strong accuracy at 99.42%, though training time rose to nearly 7 minutes (398.94 seconds). These results indicate that the direct xgboost() approach is highly reliable and efficient for large-scale data modeling, making it an excellent choice for high-volume machine learning tasks.
+
+
+
+
+
+
+XGBoost in R – via caret, with 5-fold CV simple cross-validation
+
+
+```{r}
+library(caret)
+library(xgboost)
+
+# Dataset sizes (skipping 10 million)
+sizes <- c(1e2, 1e3, 1e4, 1e5, 1e6)
+results <- data.frame()
+
+# Define a minimal tuning grid (for speed)
+tuneGrid <- expand.grid(
+  nrounds = 10,
+  max_depth = 3,
+  eta = 0.3,
+  gamma = 0,
+  colsample_bytree = 1,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+# Loop through dataset sizes
+for (sz in sizes) {
+  cat("Evaluating dataset size:", sz, "\n")
+  
+  # Load dataset
+  df <- readRDS(paste0("bootstrap_data_", sz, ".rds"))
+  df$outcome <- as.factor(df$outcome)
+
+  # Disable parallel for larger datasets
+  allow_parallel <- if (sz >= 1e5) FALSE else TRUE
+
+  # Define 5-fold CV control
+  ctrl <- trainControl(method = "cv", number = 5, allowParallel = allow_parallel)
+
+  # Run training with timing
+  start <- Sys.time()
+  res <- tryCatch({
+    model <- train(
+      outcome ~ .,
+      data = df,
+      method = "xgbTree",
+      trControl = ctrl,
+      tuneGrid = tuneGrid
+    )
+    end <- Sys.time()
+    
+    acc <- round(max(model$results$Accuracy), 4)
+    time_taken <- round(as.numeric(difftime(end, start, units = "secs")), 2)
+    c(Accuracy = acc, Time = time_taken)
+  }, error = function(e) {
+    c(Accuracy = "Error", Time = "Failed or too slow")
+  })
+
+  # Save result
+  results <- rbind(results, data.frame(
+    Method = "XGBoost in R – via caret, with 5-fold CV",
+    Size = format(sz, scientific = TRUE),
+    Accuracy = res[1],
+    Time = res[2]
+  ))
+}
+
+# Add skipped entry for 10 million rows
+results <- rbind(results, data.frame(
+  Method = "XGBoost in R – via caret, with 5-fold CV",
+  Size = format(1e7, scientific = TRUE),
+  Accuracy = "Skipped",
+  Time = "Too slow to run"
+))
+
+# Print and save final results
+print(results)
+write.csv(results, "xgboost_caret_final_5fold.csv", row.names = FALSE)
+
+  
+```
+This R script evaluates the performance of XGBoost using the caret package with 5-fold cross-validation across datasets ranging from 100 to 1 million rows. A minimal hyperparameter tuning grid is applied to ensure faster training while maintaining consistent evaluation. For each dataset, the outcome variable is converted to a factor, and the model is trained using caret::train() with 5-fold CV. To optimize performance and reduce the risk of memory overload, parallel processing is disabled for larger datasets (100,000 rows and above). The training accuracy and computation time are recorded and stored in a results table. For the 10 million row dataset, training is skipped and explicitly marked as "Too slow to run" to reflect computational constraints. This setup balances speed and reliability, offering a practical and scalable way to benchmark XGBoost with caret for small to moderately large datasets.
+
+The table summarizes the performance of XGBoost in R using the caret package with 5-fold cross-validation across progressively larger datasets. For smaller datasets (100 to 10,000 rows), the model achieved strong and increasing accuracy, ranging from 85.09% to 93.38%, with training times well under one second. As the dataset size increased to 100,000 and 1 million rows, the accuracy remained stable around 93.6%, while the computation time rose to 3.03 and 28.31 seconds, respectively. These results indicate that the caret implementation is reliable and efficient for small to moderately large datasets. However, training was skipped for the 10 million-row dataset due to excessive computational demand, and it is marked as “Skipped” with the note “Too slow to run.” Overall, the results highlight that while caret provides robust cross-validation and performance, it becomes less practical at extreme data scales.
+
